@@ -283,6 +283,11 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 
 - (void)finishRecordingWithCompletionHandler:(void (^)(void))handler;
 {
+    [self finishRecordingWithCompletionHandler:handler];
+}
+
+- (void)finishRecordingWithCompletionHandler:(void (^)(void))completed failed:(void (^)(NSError*))failed;
+{
     runSynchronouslyOnVideoProcessingQueue(^{
         if (assetWriter.status == AVAssetWriterStatusCompleted || assetWriter.status == AVAssetWriterStatusCancelled
             || assetWriter.status == AVAssetWriterStatusUnknown)
@@ -292,17 +297,46 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 
         isRecording = NO;
         dispatch_sync(movieWritingQueue, ^{
-            [assetWriterVideoInput markAsFinished];
-            [assetWriterAudioInput markAsFinished];
+            if ([assetWriterVideoInput isReadyForMoreMediaData]) {
+                [assetWriterVideoInput markAsFinished];
+            }
+            if ([assetWriterAudioInput isReadyForMoreMediaData]) {
+                [assetWriterAudioInput markAsFinished];
+            }
 #if (!defined(__IPHONE_6_0) || (__IPHONE_OS_VERSION_MAX_ALLOWED < __IPHONE_6_0))
             // Not iOS 6 SDK
             [assetWriter finishWriting];
-            if (handler) handler();
+            if (completed) completed();
 #else
             // iOS 6 SDK
             if ([assetWriter respondsToSelector:@selector(finishWritingWithCompletionHandler:)]) {
                 // Running iOS 6
-                [assetWriter finishWritingWithCompletionHandler:(handler ?: ^{ })];
+                [assetWriter finishWritingWithCompletionHandler:^{
+                    // handle failed status, else run the completed block
+                    switch (assetWriter.status) {
+//                        case AVAssetExportSessionStatusUnknown:
+//                            break;
+//                        case AVAssetExportSessionStatusWaiting:
+//                            break;
+//                        case AVAssetExportSessionStatusExporting:
+//                            break;
+//                        case AVAssetExportSessionStatusCompleted:
+//                            break;
+                        case AVAssetExportSessionStatusFailed:
+                            if (failed) {
+                                failed(assetWriter.error);
+                            }
+                            break;
+//                        case AVAssetExportSessionStatusCancelled:
+//                            break;
+                        default: {
+                            if (completed) {
+                                completed();
+                            }
+                        }
+                            break;
+                    }
+                }];
             }
             else {
                 // Not running iOS 6
@@ -310,7 +344,7 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
                 [assetWriter finishWriting];
 #pragma clang diagnostic pop
-                if (handler) handler();
+                if (completed) completed();
             }
 #endif
         });
